@@ -496,58 +496,223 @@ class AutonomousFootballBettingSystem:
     
     def _super_reasoner_phase(self) -> Dict[str, Any]:
         """Build execution plan using LLM reasoning"""
-        # Simplified reasoner - returns basic plan structure
-        return {
-            "project": f"football_iteration_{self.iteration_count}",
-            "description": "Autonomous football betting strategy",
-            "min_bets_target": Config.MIN_BETS_TARGET,
-            "performance_targets": Config.ELITE_TARGETS,
-            "files": [
+        reasoner_logger = logging.getLogger("FootballBetting.REASONER")
+        reasoner_logger.info("🧠 Calling DeepSeek to build execution plan")
+        
+        # Build context from memory
+        mem_context = self._build_memory_context()
+        error_tail = json.dumps([e for e in self.error_memory][-5:], ensure_ascii=False)
+        
+        sys_prompt = (
+            "You are a CHIEF FOOTBALL BETTING ARCHITECT creating a JSON execution plan.\n"
+            "Rules:\n"
+            "- Output ONLY valid JSON (no markdown).\n"
+            "- files array MUST include 'football_strategy.py' with clear purposes/notes.\n"
+            "- Include strategy_adjustments if bet frequency is low.\n"
+            "- No placeholders; everything implementable this iteration.\n"
+        )
+        
+        user_prompt = f"""
+FOOTBALL BETTING EXECUTION PLAN:
+
+PERFORMANCE_TARGETS={json.dumps(Config.ELITE_TARGETS, indent=2)}
+MEMORY_CONTEXT={mem_context}
+ERROR_TAIL={error_tail}
+
+Return JSON with keys:
+project, description, min_bets_target, performance_targets,
+files (array of {{path,purpose,notes}}),
+agent_ecosystem (football-specific agents).
+""".strip()
+        
+        response = self.llm_client.call_agent("deepseek-reasoner", sys_prompt, user_prompt)
+        plan_json = self._extract_json(response)
+        
+        # Add football agent ecosystem
+        plan_json["agent_ecosystem"] = {
+            "mission": "FOOTBALL_ALPHA_HUNTING",
+            "required_agents": [
                 {
-                    "path": "football_strategy.py",
-                    "purpose": "Main betting strategy",
-                    "notes": "Generate 17+ daily bets with 71% win rate"
+                    "name": "form_analyzer",
+                    "purpose": "Analyze team form, momentum, and performance trends",
+                    "data_sources": ["Recent matches", "Home/away splits", "Scoring patterns"],
+                    "outputs": ["form_ratings", "momentum_signals"]
+                },
+                {
+                    "name": "injury_intelligence", 
+                    "purpose": "Track player injuries and lineup impacts",
+                    "data_sources": ["Team news", "Injury reports", "Lineup changes"],
+                    "outputs": ["injury_impact_scores", "lineup_strength"]
+                },
+                {
+                    "name": "h2h_specialist",
+                    "purpose": "Analyze head-to-head historical patterns",
+                    "data_sources": ["Historical matches", "Style matchups", "Venue factors"],
+                    "outputs": ["h2h_advantages", "historical_trends"]
+                },
+                {
+                    "name": "odds_value_hunter",
+                    "purpose": "Find value in bookmaker odds discrepancies",
+                    "data_sources": ["Multiple bookmakers", "Odds movements", "Market sentiment"],
+                    "outputs": ["value_bets", "odds_discrepancies"]
                 }
-            ],
-            "agent_ecosystem": {
-                "mission": "FOOTBALL_ALPHA_HUNTING",
-                "required_agents": [
-                    {"name": "form_analyzer", "purpose": "Analyze team form"},
-                    {"name": "injury_intelligence", "purpose": "Track injuries"},
-                    {"name": "h2h_specialist", "purpose": "Head-to-head analysis"},
-                    {"name": "odds_value_hunter", "purpose": "Find value bets"}
-                ]
-            }
+            ]
         }
+        
+        reasoner_logger.info(f"🧠 Plan generated with {len(plan_json.get('files', []))} files")
+        return plan_json
     
     def _expert_coder_phase(self, plan: Dict[str, Any]) -> Dict[str, str]:
-        """Generate implementation code"""
-        # Simplified coder - returns basic strategy implementation
-        strategy_code = '''
-from typing import Dict, List, Any
-import random
-
-class FootballBettingStrategy:
-    """Autonomous football betting strategy"""
+        """Generate implementation code using LLM"""
+        coder_logger = logging.getLogger("FootballBetting.CODER")
+        coder_logger.info("🛠️ Calling DeepSeek to generate implementation code")
+        
+        code_map: Dict[str, str] = {}
+        
+        for f in plan.get("files", []):
+            path = f.get("path")
+            purpose = f.get("purpose", "")
+            notes = f.get("notes", "")
+            if not path:
+                continue
+            
+            # File-specific constraints
+            constraints = ""
+            if path == "football_strategy.py":
+                constraints = (
+                    "HARD CONTRACT REQUIREMENTS:\n"
+                    "- File MUST define:\n"
+                    "    class FootballBettingStrategy:\n"
+                    "        def generate_bets(self, football_data: List[Dict]) -> List[Dict]:\n"
+                    "            ...\n"
+                    "- generate_bets MUST return a list of bet dicts with:\n"
+                    "    fixture_id, bet_type, confidence, stake, prediction\n"
+                    "- Ensure 17+ daily bets across 8+ leagues\n"
+                    "- Focus on 71% win rate probability\n"
+                    "- Use sophisticated football analytics\n"
+                )
+            
+            sys_prompt = (
+                "You are a SENIOR PYTHON FOOTBALL BETTING DEVELOPER.\n"
+                "Return ONLY raw Python code for the requested file.\n"
+                "No markdown fences. No external commentary. No placeholders.\n"
+            )
+            
+            user_prompt = f"""
+FILE_PATH: {path}
+PURPOSE: {purpose}
+NOTES: {notes}
+CONSTRAINTS:
+{constraints}
+- Use only numpy, pandas, standard library.
+- Code must be syntactically valid and importable.
+- Implement sophisticated football betting logic.
+Return full code for {path}.
+""".strip()
+            
+            raw_code = self.llm_client.call_agent("deepseek-coder", sys_prompt, user_prompt)
+            clean = self._clean_code(raw_code)
+            ok, err = self.syntax_guard.validate_python_syntax(clean, path)
+            if not ok:
+                logger.error(f"Syntax error in {path}: {err}")
+                raise RuntimeError(f"Invalid generated code for {path}: {err}")
+            
+            code_map[path] = clean
+            coder_logger.info(f"🛠️ Generated {path} ({len(clean)} chars)")
+        
+        # Generate agent files
+        agent_files = self._generate_agent_files(plan)
+        code_map.update(agent_files)
+        
+        return code_map
     
-    def generate_bets(self, football_data: List[Dict[str, Any]]) -> List[Dict]:
-        """Generate betting signals"""
-        bets = []
+    def _build_memory_context(self) -> str:
+        """Build memory context from learning"""
+        blocks = {}
+        if self.learning_context:
+            blocks["learning_tail"] = self.learning_context[-5:]
+        if self.error_memory:
+            blocks["errors_tail"] = self.error_memory[-5:]
+        if self.strategy_insights:
+            blocks["strategy_insights_tail"] = self.strategy_insights[-5:]
+        return json.dumps(blocks, ensure_ascii=False)
+    
+    def _extract_json(self, text: str) -> Dict[str, Any]:
+        """Extract JSON from text"""
+        t = text.strip()
+        if t.startswith("```json"):
+            t = t[7:]
+        if t.endswith("```"):
+            t = t[:-3]
+        try:
+            return json.loads(t)
+        except json.JSONDecodeError:
+            s = t.find('{')
+            e = t.rfind('}') + 1
+            if s >= 0 and e > s:
+                return json.loads(t[s:e])
+            raise
+    
+    def _clean_code(self, code: str) -> str:
+        """Clean generated code"""
+        c = code.strip()
+        if c.startswith("```python"):
+            c = c[9:]
+        if c.startswith("```"):
+            c = c[3:]
+        if c.endswith("```"):
+            c = c[:-3]
+        return c.strip()
+    
+    def _generate_agent_files(self, plan: Dict[str, Any]) -> Dict[str, str]:
+        """Generate agent files using LLM"""
+        agent_logger = logging.getLogger("FootballBetting.AGENT-DESIGNER")
+        agent_files = {}
+        agent_ecosystem = plan.get("agent_ecosystem", {})
         
-        for fixture in football_data:
-            # Simple strategy for demonstration
-            if random.random() > 0.5:
-                bets.append({
-                    'fixture_id': fixture.get('fixture_id', 'unknown'),
-                    'bet_type': random.choice(['home_win', 'away_win', 'over_2.5', 'btts']),
-                    'confidence': random.uniform(0.6, 0.9),
-                    'stake': 0.05,
-                    'prediction': 'Value bet identified'
-                })
+        for agent_spec in agent_ecosystem.get("required_agents", []):
+            agent_name = agent_spec["name"]
+            filename = f"{agent_name}_agent.py"
+            
+            sys_prompt = f"""
+You are a FOOTBALL BETTING AGENT ARCHITECT designing {agent_name}.
+MISSION: {agent_spec['purpose']}
+DATA SOURCES: {agent_spec.get('data_sources', [])}
+OUTPUTS: {agent_spec.get('outputs', [])}
+
+DESIGN PRINCIPLES:
+- FOCUS ON PREDICTIVE signals for football betting
+- Use sophisticated football-specific algorithms
+- Be self-contained and autonomous
+- Integrate with other agents via clear interfaces
+
+Return complete, syntactically valid Python code.
+"""
+            
+            user_prompt = f"""
+Create {filename} that implements a sophisticated {agent_name} for football betting.
+
+The agent should:
+1. Use advanced football analytics specific to its domain
+2. Provide clear prediction signals for betting
+3. Handle football API data properly
+4. Return predictions in format: {{'prediction': str, 'confidence': float}}
+
+Focus on football-specific insights that casual bettors miss.
+Return complete Python code for {filename}.
+"""
+            
+            raw_code = self.llm_client.call_agent("deepseek-coder", sys_prompt, user_prompt, temperature=0.7)
+            clean = self._clean_code(raw_code)
+            ok, err = self.syntax_guard.validate_python_syntax(clean, filename)
+            if not ok:
+                agent_logger.error(f"Syntax error in {filename}: {err}")
+                continue
+            
+            agent_files[filename] = clean
+            agent_logger.info(f"🤖 Generated {filename}")
         
-        return bets
-'''
-        return {"football_strategy.py": strategy_code}
+        return agent_files
     
     def _create_iteration_project(self, plan: Dict[str, Any], 
                                   code_files: Dict[str, str]) -> str:
