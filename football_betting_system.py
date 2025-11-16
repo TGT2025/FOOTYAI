@@ -596,6 +596,8 @@ agent_ecosystem (football-specific agents).
                 "You are a SENIOR PYTHON FOOTBALL BETTING DEVELOPER.\n"
                 "Return ONLY raw Python code for the requested file.\n"
                 "No markdown fences. No external commentary. No placeholders.\n"
+                "CRITICAL: Ensure all parentheses, brackets, and quotes are properly closed.\n"
+                "CRITICAL: Code must be syntactically valid - test mentally before returning.\n"
             )
             
             user_prompt = f"""
@@ -610,12 +612,29 @@ CONSTRAINTS:
 Return full code for {path}.
 """.strip()
             
-            raw_code = self.llm_client.call_agent("deepseek-coder", sys_prompt, user_prompt)
-            clean = self._clean_code(raw_code)
-            ok, err = self.syntax_guard.validate_python_syntax(clean, path)
-            if not ok:
-                logger.error(f"Syntax error in {path}: {err}")
-                raise RuntimeError(f"Invalid generated code for {path}: {err}")
+            # Try up to 3 times to generate valid code
+            max_attempts = 3
+            clean = None
+            for attempt in range(max_attempts):
+                try:
+                    raw_code = self.llm_client.call_agent("deepseek-coder", sys_prompt, user_prompt)
+                    clean = self._clean_code(raw_code)
+                    ok, err = self.syntax_guard.validate_python_syntax(clean, path)
+                    if ok:
+                        break
+                    else:
+                        coder_logger.warning(f"⚠️ Attempt {attempt + 1}/{max_attempts}: Syntax error in {path}: {err}")
+                        if attempt < max_attempts - 1:
+                            # Add syntax error feedback to next attempt
+                            user_prompt += f"\n\nPREVIOUS ATTEMPT HAD SYNTAX ERROR: {err}\nPlease fix and regenerate valid Python code."
+                        else:
+                            logger.error(f"❌ Failed to generate valid {path} after {max_attempts} attempts")
+                            raise RuntimeError(f"Invalid generated code for {path} after {max_attempts} attempts: {err}")
+                except Exception as e:
+                    if attempt == max_attempts - 1:
+                        raise
+                    coder_logger.warning(f"⚠️ Attempt {attempt + 1} failed: {e}")
+                    time.sleep(2)
             
             code_map[path] = clean
             coder_logger.info(f"🛠️ Generated {path} ({len(clean)} chars)")
@@ -686,6 +705,8 @@ DESIGN PRINCIPLES:
 - Be self-contained and autonomous
 - Integrate with other agents via clear interfaces
 
+CRITICAL: Ensure all parentheses, brackets, and quotes are properly closed.
+CRITICAL: Code must be syntactically valid Python.
 Return complete, syntactically valid Python code.
 """
             
@@ -702,15 +723,32 @@ Focus on football-specific insights that casual bettors miss.
 Return complete Python code for {filename}.
 """
             
-            raw_code = self.llm_client.call_agent("deepseek-coder", sys_prompt, user_prompt, temperature=0.7)
-            clean = self._clean_code(raw_code)
-            ok, err = self.syntax_guard.validate_python_syntax(clean, filename)
-            if not ok:
-                agent_logger.error(f"Syntax error in {filename}: {err}")
-                continue
+            # Try up to 2 times to generate valid agent code
+            max_attempts = 2
+            clean = None
+            for attempt in range(max_attempts):
+                try:
+                    raw_code = self.llm_client.call_agent("deepseek-coder", sys_prompt, user_prompt, temperature=0.7)
+                    clean = self._clean_code(raw_code)
+                    ok, err = self.syntax_guard.validate_python_syntax(clean, filename)
+                    if ok:
+                        break
+                    else:
+                        agent_logger.warning(f"⚠️ Attempt {attempt + 1}/{max_attempts}: Syntax error in {filename}: {err}")
+                        if attempt < max_attempts - 1:
+                            user_prompt += f"\n\nPREVIOUS ATTEMPT HAD SYNTAX ERROR: {err}\nPlease fix and regenerate valid Python code."
+                        else:
+                            agent_logger.error(f"❌ Failed to generate valid {filename} after {max_attempts} attempts, skipping")
+                            continue
+                except Exception as e:
+                    agent_logger.warning(f"⚠️ Agent generation attempt {attempt + 1} failed: {e}")
+                    if attempt == max_attempts - 1:
+                        continue
+                    time.sleep(2)
             
-            agent_files[filename] = clean
-            agent_logger.info(f"🤖 Generated {filename}")
+            if clean:
+                agent_files[filename] = clean
+                agent_logger.info(f"🤖 Generated {filename}")
         
         return agent_files
     
